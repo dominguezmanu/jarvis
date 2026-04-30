@@ -13,33 +13,35 @@ from scipy.spatial.distance import cdist
 AUDIO_PATH = "audios"
 COMMANDS = ["youtube", "visual", "firefox", "servo"]
 
+#para el puerto serial
 SERIAL_PORT = "/dev/ttyUSB0"
 BAUD = 115200
 
+#para e audio
 SAMPLE_RATE = 44100
 DURATION = 2.5
 N_MFCC = 13
 
-# Ajusta según pruebas
+#Correlacion minima que debe tener para aceptar un comando
 MAX_ACCEPTED_DISTANCE = 0.45
 
-# ==========================================
 
-
-def to_mono(audio):
+# convierte audio a mono, porque se grabaron en mono y por si se graba en stereo
+def convertir_a_mono(audio):
     if audio.ndim > 1:
         audio = np.mean(audio, axis=1)
     return audio.astype(np.float32)
 
-
-def normalize(audio):
+#volumen de -1 a 1
+def normalizar(audio):
     audio = audio - np.mean(audio)
     max_val = np.max(np.abs(audio)) + 1e-9
     return audio / max_val
 
 
-def trim_silence(audio, top_db=25):
-    audio = normalize(audio)
+#Elimina los silencios al inicio y final del audio para mejor comparacin
+def recortar_silencio(audio, top_db=25):
+    audio = normalizar(audio)
     trimmed, _ = librosa.effects.trim(audio, top_db=top_db)
 
     if len(trimmed) < 1000:
@@ -47,16 +49,16 @@ def trim_silence(audio, top_db=25):
 
     return trimmed
 
-
-def preprocess(audio):
-    audio = to_mono(audio)
-    audio = normalize(audio)
-    audio = trim_silence(audio)
-    audio = normalize(audio)
+#esto hace que el audio pase por todo el proceso de preparacion
+def preprocesar(audio):
+    audio = convertir_a_mono(audio)
+    audio = normalizar(audio)
+    audio = recortar_silencio(audio)
+    audio = normalizar(audio)
     return audio
 
-
-def extract_mfcc(audio):
+#extrae los mfcc del audio para una mejor comparacion
+def extraer_mfcc(audio):
     mfcc = librosa.feature.mfcc(
         y=audio,
         sr=SAMPLE_RATE,
@@ -70,8 +72,8 @@ def extract_mfcc(audio):
 
     return mfcc
 
-
-def dtw_distance(mfcc1, mfcc2):
+#Compara los audios  usando DTW, saber como lo hace la verda, esto fue sacado de la docuemntacion xd
+def distancia_dtw(mfcc1, mfcc2):
     distance_matrix = cdist(mfcc1, mfcc2, metric="cosine")
     D, wp = librosa.sequence.dtw(C=distance_matrix)
 
@@ -80,28 +82,28 @@ def dtw_distance(mfcc1, mfcc2):
 
     return normalized_distance
 
-
-def load_patterns():
+#aqui se cargan los patrones de audio y se hacen pasar por procesamiento, por uniformidad 
+def cargar_patrones():
     patterns = {}
 
     for cmd in COMMANDS:
         path = os.path.join(AUDIO_PATH, f"{cmd}.wav")
 
         if not os.path.exists(path):
-            print(f"❌ No existe: {path}")
+            print(f" No existe: {path}")
             continue
 
         audio, sr = sf.read(path)
 
         if sr != SAMPLE_RATE:
             audio = librosa.resample(
-                to_mono(audio),
+                convertir_a_mono(audio),
                 orig_sr=sr,
                 target_sr=SAMPLE_RATE
             )
 
-        audio = preprocess(audio)
-        mfcc = extract_mfcc(audio)
+        audio = preprocesar(audio)
+        mfcc = extraer_mfcc(audio)
 
         patterns[cmd] = mfcc
         print(f"✔ Cargado: {cmd}")
@@ -109,8 +111,9 @@ def load_patterns():
     return patterns
 
 
-def record_audio():
-    print("\n🎤 Grabando... habla ahora")
+#Graba el audio
+def grabar_audio():
+    print("\n Grabando... habla ahora")
 
     audio = sd.rec(
         int(DURATION * SAMPLE_RATE),
@@ -125,26 +128,28 @@ def record_audio():
     return audio.flatten()
 
 
-def detect(audio, patterns):
-    audio = preprocess(audio)
-    mfcc_live = extract_mfcc(audio)
+#Limpia el audio grabado, caclula los mfcc y compara con los patrones
+# guarda el score mas bajo como el mejor
+def detectar(audio, patterns):
+    audio = preprocesar(audio)
+    mfcc_live = extraer_mfcc(audio)
 
     scores = {}
 
     for cmd, pattern_mfcc in patterns.items():
-        distance = dtw_distance(mfcc_live, pattern_mfcc)
+        distance = distancia_dtw(mfcc_live, pattern_mfcc)
         scores[cmd] = distance
 
     best = min(scores, key=scores.get)
     best_score = scores[best]
 
-    print("\n--- SCORES MFCC + DTW ---")
-    print("Menor score = más parecido\n")
+    print("\n--- score de correlacion---")
+
 
     for cmd, score in sorted(scores.items(), key=lambda x: x[1]):
         print(f"{cmd:10s}: {score:.4f}")
 
-    print(f"\n🏆 Mejor coincidencia: {best} ({best_score:.4f})")
+    print(f"\nMejor coincidencia: {best} ({best_score:.4f})")
 
     if best_score <= MAX_ACCEPTED_DISTANCE:
         return best
@@ -152,61 +157,61 @@ def detect(audio, patterns):
     return None
 
 
-# --------- ACCIONES ---------
-
-def execute_action(command, ser):
+# acciones en consola, son puros comando, excepto el ultimo
+#que manda "servo" por el serial pal arduino
+def ejecutar_accion(command, ser):
     if command == "firefox":
-        print("🦊 Abriendo Firefox...")
+        print("Abriendo Firefox")
         subprocess.Popen(["firefox"])
 
     elif command == "visual":
-        print("💻 Abriendo VS Code...")
+        print("Abriendo VS Code")
         subprocess.Popen(["code"])
 
     elif command == "youtube":
-        print("🎬 Abriendo YouTube...")
+        print("Abriendo YouTube")
         subprocess.Popen(["xdg-open", "https://www.youtube.com/watch?v=glaFn_mdqdQ"])
 
     elif command == "servo":
-        print("⚙️ Enviando comando al ESP...")
+        print("Enviando comando al arduino...")
         ser.write(b"SERVO\n")
 
 
-# --------- MAIN ---------
+# funcion main
 
-def main():
-    print("🔌 Conectando al ESP...")
+def principal():
+    print("Conectando alArduino")
     ser = serial.Serial(SERIAL_PORT, BAUD, timeout=1)
     time.sleep(2)
 
-    print("📂 Cargando audios patrón...")
-    patterns = load_patterns()
+    print("Cargando audios patrón")
+    patterns = cargar_patrones()
 
     if not patterns:
         print("No se cargó ningún audio.")
         return
 
-    print("\n✅ Sistema listo.")
-    print("Presiona el botón del ESP para grabar.")
+    print("\nSistema listo.")
+    print("Presiona el botón del para grabar")
 
     while True:
         if ser.in_waiting:
             line = ser.readline().decode(errors="ignore").strip()
 
             if line == "RECORD":
-                print("\n🟢 Botón presionado.")
+                print("\nBotón presionado.")
 
-                audio = record_audio()
-                result = detect(audio, patterns)
+                audio = grabar_audio()
+                result = detectar(audio, patterns)
 
                 if result:
-                    print(f"✅ Comando detectado: {result}")
-                    execute_action(result, ser)
+                    print(f"omando detectado: {result}")
+                    ejecutar_accion(result, ser)
                 else:
-                    print("❌ No reconocido")
+                    print("NO reconocido, saber que dijo compadre")
 
         time.sleep(0.05)
 
 
 if __name__ == "__main__":
-    main()
+    principal()
